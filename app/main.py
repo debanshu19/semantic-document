@@ -20,7 +20,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import sdoc
+from app import native_dialog, sdoc
 from app.library import list_library
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -57,6 +57,7 @@ def _render(request, entries, *, mode, doc_ref=None, is_external=False, draft=No
             "draft": draft,
             "finalized": finalized,
             "error": error,
+            "dialogs_available": native_dialog.available(),
         },
     )
 
@@ -109,12 +110,38 @@ def save(title: str = Form(...), content: str = Form(...), doc: str = Form("")):
 
 
 @app.post("/finalize")
-def finalize(doc: str = Form(...)):
+async def finalize(doc: str = Form(...)):
+    """Finalizing is the one truly permanent 'save' in this app -- so it's
+    the one place we pop a native Save dialog and ask the user exactly
+    where the resulting .sdoc should live. This must stay `async def`
+    (see app/native_dialog.py) so the dialog runs on the same thread as
+    the event loop rather than a thread-pool worker.
+    """
+    chosen = native_dialog.ask_save_path(default_name=doc)
+    if chosen is None:
+        if native_dialog.available():
+            # User hit Cancel in the dialog -- not an error, just a no-op.
+            return RedirectResponse(f"/?doc={quote(doc)}", status_code=303)
+        # No display/Tk available at all (e.g. headless server) -- fall
+        # back to the old behavior of finalizing straight into the library.
+        chosen = sdoc.final_path(LIBRARY_DIR, doc)
+
     try:
-        sdoc.finalize_draft(LIBRARY_DIR, doc)
+        sdoc.finalize_draft(LIBRARY_DIR, doc, output_path=chosen)
     except sdoc.SDocError as exc:
         return RedirectResponse(f"/?doc={quote(doc)}&error={quote(str(exc))}", status_code=303)
-    return RedirectResponse(f"/?doc={quote(doc)}", status_code=303)
+    return RedirectResponse(f"/?path={quote(str(chosen))}", status_code=303)
+
+
+@app.get("/browse/open")
+async def browse_open(doc: str = ""):
+    """Pops a native 'Open' dialog filtered to .sdoc files. `doc` is just
+    carried through so Cancel returns you to wherever you were."""
+    chosen = native_dialog.ask_open_path()
+    if chosen is None:
+        fallback = f"/?doc={quote(doc)}" if doc else "/"
+        return RedirectResponse(fallback, status_code=303)
+    return RedirectResponse(f"/?path={quote(str(chosen))}", status_code=303)
 
 
 @app.get("/search", response_class=HTMLResponse)

@@ -55,13 +55,24 @@ it works fully offline with zero extra setup either way.
 
 - **New document** -- write in the editor, hit *Save*. It's a draft:
   freely editable, stored as a small JSON file in your library.
-- **Finalize & Save** -- locks the draft forever into a `.sdoc` file.
-  This is permanent; there's no "unlock."
+- **Finalize & Save As...** -- pops a native OS "Save As" dialog so you
+  choose exactly where the resulting `.sdoc` lives (your Desktop, a
+  synced folder, a USB stick, anywhere). This locks the draft forever;
+  it's permanent, there's no "unlock." Hit Cancel in the dialog and
+  nothing happens -- the draft is untouched.
 - **Search** -- once a document is finalized, the search box blends
   keyword (FTS5/BM25) and semantic (cosine similarity) ranking over the
   chunks stored inside the file.
-- **Open a document** -- pick any document from your library, or open
-  *any* `.sdoc` file elsewhere on disk by path -- it's fully portable.
+- **Open a document** -- quick-pick anything still in your library from
+  the dropdown, or hit **Browse...** for a native "Open" dialog to pick
+  any `.sdoc` file anywhere on disk -- it's fully portable.
+
+Both dialogs are native OS windows (via Python's built-in `tkinter`),
+not browser popups -- this works because the app is local-first and the
+server and browser are always the same machine. If `tkinter` isn't
+available (e.g. a headless server), the app falls back automatically:
+Finalize writes into your library like before, and a plain "open by
+path" text box appears instead of the Browse button.
 
 ## Embedding backends
 
@@ -82,13 +93,14 @@ matter which backend built them.
 
 ```
 app/
-  chunking.py    text -> overlapping chunks with source offsets
-  embeddings.py  local embedding backends (sentence-transformers + hashing fallback)
-  sdoc.py        the .sdoc file format: draft, finalize, open, search
-  library.py     lists drafts/finalized docs in the library folder
-  main.py        FastAPI routes (thin -- logic lives above)
-templates/       Jinja2 + HTMX + Tailwind, single-page UI
-tests/           pytest coverage for the core lifecycle
+  chunking.py      text -> overlapping chunks with source offsets
+  embeddings.py    local embedding backends (sentence-transformers + hashing fallback)
+  sdoc.py          the .sdoc file format: draft, finalize, open, search
+  library.py       lists drafts/finalized docs in the library folder
+  native_dialog.py native Save As/Open dialogs (tkinter)
+  main.py          FastAPI routes (thin -- logic lives above)
+templates/         Jinja2 + HTMX + Tailwind, single-page UI
+tests/             pytest coverage for the core lifecycle
 ```
 
 ## What's deferred (by design, for now)

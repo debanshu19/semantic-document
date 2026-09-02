@@ -25,7 +25,7 @@ import os
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -128,16 +128,22 @@ def content_hash(text: str) -> str:
 # Finalization (build + atomic commit)
 # --------------------------------------------------------------------------
 
-def finalize_draft(library_dir: Path, name: str) -> Path:
+def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None) -> Path:
     """Run the full DRAFT -> FINALIZED pipeline for `name`.
+
+    By default the finalized .sdoc is written into `library_dir` next to
+    the draft. Pass `output_path` to write it somewhere else entirely --
+    e.g. a location the user picked via a native Save dialog. The draft
+    itself always lives in `library_dir` regardless of where the
+    finalized file ends up.
 
     Returns the path to the new .sdoc on success. Raises SDocError on any
     failure; the draft is guaranteed untouched in that case.
     """
     d_path = draft_path(library_dir, name)
-    f_path = final_path(library_dir, name)
+    f_path = output_path if output_path is not None else final_path(library_dir, name)
     if f_path.exists():
-        raise SDocError(f"'{name}' is already finalized and immutable.")
+        raise SDocError(f"'{f_path}' already exists and is immutable -- pick a different location.")
 
     draft = read_draft(d_path)
     canonical = canonicalize(draft.content)
@@ -157,7 +163,8 @@ def finalize_draft(library_dir: Path, name: str) -> Path:
     if len(vectors) != len(chunks):
         raise SDocError("Embedding count did not match chunk count -- aborting.")
 
-    tmp_path = library_dir / f".{name}.{uuid.uuid4().hex}.sdoc.tmp"
+    f_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = f_path.parent / f".{f_path.stem}.{uuid.uuid4().hex}.sdoc.tmp"
     try:
         _build_sdoc_file(tmp_path, title=draft.title, canonical=canonical, chunks=chunks, vectors=vectors)
         _verify_integrity(tmp_path, expected_hash=content_hash(canonical), expected_chunks=len(chunks))

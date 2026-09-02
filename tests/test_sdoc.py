@@ -118,6 +118,34 @@ def test_finalize_produces_exactly_one_file_no_sidecars(tmp_path):
     assert produced == {"doc8.sdoc"}
 
 
+def test_finalize_to_explicit_output_path(tmp_path):
+    """Simulates finalizing to a location the user picked via a native
+    Save dialog -- somewhere entirely outside the library dir."""
+    library_dir = tmp_path / "library"
+    elsewhere = tmp_path / "elsewhere" / "my-chosen-name.sdoc"
+
+    sdoc.create_draft(library_dir, "doc9", title="Doc Nine", content="saved somewhere the user picked")
+    result = sdoc.finalize_draft(library_dir, "doc9", output_path=elsewhere)
+
+    assert result == elsewhere
+    assert elsewhere.exists()
+    assert not sdoc.draft_path(library_dir, "doc9").exists()
+    assert not sdoc.final_path(library_dir, "doc9").exists()  # nothing left in the library dir
+    opened = sdoc.open_finalized(elsewhere)
+    assert opened["content"] == "saved somewhere the user picked"
+
+
+def test_finalize_refuses_to_overwrite_existing_output_path(tmp_path):
+    library_dir = tmp_path / "library"
+    target = tmp_path / "already-there.sdoc"
+    target.write_text("not a real sdoc, just occupying the path")
+
+    sdoc.create_draft(library_dir, "doc10", title="Doc Ten", content="content")
+    with pytest.raises(sdoc.SDocError):
+        sdoc.finalize_draft(library_dir, "doc10", output_path=target)
+    assert sdoc.draft_path(library_dir, "doc10").exists()
+
+
 def test_search_with_no_query_returns_empty(tmp_path):
     sdoc.create_draft(tmp_path, "doc7", title="Doc Seven", content="anything at all")
     final = sdoc.finalize_draft(tmp_path, "doc7")
