@@ -6,6 +6,8 @@ __pycache__/
 .env
 node_modules/
 .DS_Store
+.vscode/
+.idea/
 
 # user document library - contains real user content, not source code
 library/*
