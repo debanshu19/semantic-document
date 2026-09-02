@@ -173,7 +173,12 @@ def finalize_draft(library_dir: Path, name: str) -> Path:
 def _build_sdoc_file(path: Path, *, title: str, canonical: str, chunks, vectors: np.ndarray) -> None:
     conn = sqlite3.connect(path)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Deliberately NOT WAL mode: WAL leaves -wal/-shm sidecar files
+        # sitting next to the database, which would break the "exactly
+        # one portable artifact" guarantee (design doc section 1). This
+        # is a single write-then-close build, not a long-lived writer, so
+        # the default rollback journal (cleaned up automatically on
+        # commit) is exactly what we want here.
         conn.executescript(
             """
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

@@ -3,6 +3,11 @@ and save a draft, finalize it, and search it. Search results render into
 a panel below the editor via HTMX partial swaps (no page reload).
 
 Routes stay thin; all real logic lives in app.sdoc / app.library.
+
+Plain web app, run with `uvicorn app.main:app`. Document data lives in
+the user's home directory rather than next to the source code, so the
+*documents* stay portable (copy `~/SemanticDocument/library/` anywhere)
+even though the app itself is just a regular local web server.
 """
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ from app import sdoc
 from app.library import list_library
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-LIBRARY_DIR = Path(os.environ.get("SDOC_LIBRARY_DIR", BASE_DIR / "library"))
+LIBRARY_DIR = Path(os.environ.get("SDOC_LIBRARY_DIR", Path.home() / "SemanticDocument" / "library"))
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 app = FastAPI(title="Semantic Document")

@@ -107,6 +107,17 @@ def test_search_ranks_relevant_chunk_first(tmp_path):
     assert "black holes" in hits2[0].text.lower()
 
 
+def test_finalize_produces_exactly_one_file_no_sidecars(tmp_path):
+    """The whole point of .sdoc is one portable artifact -- no -wal/-shm
+    journal sidecars left behind (a real bug caught during manual testing:
+    WAL journal mode leaves exactly those files sitting next to the db)."""
+    sdoc.create_draft(tmp_path, "doc8", title="Doc Eight", content="single file, no sidecars please")
+    sdoc.finalize_draft(tmp_path, "doc8")
+
+    produced = {p.name for p in tmp_path.iterdir()}
+    assert produced == {"doc8.sdoc"}
+
+
 def test_search_with_no_query_returns_empty(tmp_path):
     sdoc.create_draft(tmp_path, "doc7", title="Doc Seven", content="anything at all")
     final = sdoc.finalize_draft(tmp_path, "doc7")
