@@ -16,10 +16,21 @@ hop) -- so calling these functions from an `async def` route, without
 wrapping them in run_in_threadpool/asyncio.to_thread, is what keeps
 this main-thread-safe. It also blocks the server while the dialog is
 open, which is fine (even correct) for a single-user local tool.
+
+macOS focus gotcha: a Tk window created by a plain terminal-launched
+Python process (no .app bundle, no Info.plist) doesn't automatically
+become the frontmost/focused app the way a normal double-clicked app
+would. The dialog genuinely opens -- it's just easy to miss behind your
+browser or terminal window. `_bring_to_front()` below fixes that with a
+best-effort AppleScript nudge; `-topmost` plus `lift()`/`focus_force()`
+handle the rest (and are all that's needed on Windows/Linux).
 """
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from app.sdoc import FINAL_SUFFIX
@@ -37,12 +48,38 @@ def available() -> bool:
     return True
 
 
+def _bring_to_front() -> None:
+    """Best-effort only: if this fails or isn't permitted (e.g. Automation
+    permission not yet granted), we just proceed -- the dialog still
+    exists, it just might not be focused. Never let this block/crash the
+    actual dialog flow."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f'tell application "System Events" to set frontmost of '
+                f"(first process whose unix id is {os.getpid()}) to true",
+            ],
+            timeout=2,
+            capture_output=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not force this process to the foreground", exc_info=True)
+
+
 def _hidden_root():
     import tkinter
 
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+    root.update()
+    _bring_to_front()
     return root
 
 

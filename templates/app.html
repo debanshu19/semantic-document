@@ -48,6 +48,9 @@
 
     <a href="/" class="text-sm text-slate-500 hover:underline ml-auto">+ New blank document</a>
   </div>
+  {% if dialogs_available %}
+  <p class="text-xs text-slate-400 mt-3">Native dialogs open as a separate window -- if you don't see it pop up immediately, check your Dock or press Cmd+Tab (Alt+Tab on Windows/Linux).</p>
+  {% endif %}
 </section>
 
 <section class="bg-white border border-slate-200 rounded-xl p-5 mb-6">
