@@ -220,7 +220,7 @@ def _build_sdoc_file(path: Path, *, title: str, canonical: str, chunks, vectors:
                 (chunk.index, vector.astype(np.float32).tobytes()),
             )
 
-        from app.embeddings import EMBEDDING_DIM, current_model_name
+        from app.embeddings import EMBEDDING_DIM, MODEL_NAME
 
         now = time.time()
         meta = {
@@ -228,7 +228,7 @@ def _build_sdoc_file(path: Path, *, title: str, canonical: str, chunks, vectors:
             "title": title,
             "status": "FINALIZED",
             "finalized_at": str(now),
-            "model_name": current_model_name(),
+            "model_name": MODEL_NAME,
             "embedding_dim": str(EMBEDDING_DIM),
             "content_hash": content_hash(canonical),
             "chunk_count": str(len(chunks)),

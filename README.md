@@ -34,6 +34,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
+uv pip install sentence-transformers   # the embedding model -- see below
 uv run uvicorn app.main:app --reload
 ```
 
@@ -44,12 +45,18 @@ repo. That keeps them independent of wherever you happen to have checked
 out the source, and safe from `git clean`. Override the location with
 the `SDOC_LIBRARY_DIR` environment variable if you want it elsewhere.
 
-The first finalize will try to download a small local embedding model
-(`sentence-transformers/all-MiniLM-L6-v2`, ~80MB) from Hugging Face --
-install it yourself first with `uv pip install sentence-transformers` if
-you want that. Without it, the app automatically uses a lightweight
-built-in hashing embedder instead (see "Embedding backends" below), so
-it works fully offline with zero extra setup either way.
+Semantic Document uses exactly one embedding model --
+`sentence-transformers/all-MiniLM-L6-v2` -- running fully locally, so no
+document text or query ever leaves your machine. It's kept as an
+optional (rather than hard) dependency only because it pulls in torch, a
+large download; functionally, it's the app's one and only embedding
+backend, no fallback. It downloads itself from Hugging Face the first
+time you finalize a document, then runs fully offline after that. If
+it's not installed (or that first download can't complete), finalize
+fails safely and clearly: your draft is untouched, nothing
+half-finished gets published. That's the design doc's intended FAILED
+state working as designed, not a bug -- there's no silent degrading to a
+lower-quality substitute model.
 
 ## Using it
 
@@ -76,32 +83,20 @@ type=file>` for opening and a plain file download for saving. No native
 OS dialogs, no extra permissions, no platform-specific quirks to work
 around; it behaves identically in Chrome, Firefox, Safari, and Edge.
 
-## Embedding backends
-
-`app/embeddings.py` picks a backend automatically, once per process:
-
-- **sentence-transformers** (if installed and loadable) -- the real
-  local transformer model, best quality.
-- **hashing** (always available, zero dependencies) -- a deterministic
-  feature-hashed bag-of-words embedder. Lower semantic quality, but a
-  perfectly honest fallback that needs nothing beyond numpy and works
-  identically across machines and process restarts.
-
-Whichever one actually produced a document's embeddings gets recorded in
-that document's own metadata, so `.sdoc` files stay self-describing no
-matter which backend built them.
-
 ## Project layout
 
 ```
 app/
-  chunking.py      text -> overlapping chunks with source offsets
-  embeddings.py    local embedding backends (sentence-transformers + hashing fallback)
-  sdoc.py          the .sdoc file format: draft, finalize, open, search
-  library.py       lists drafts/finalized docs in the library folder
-  main.py          FastAPI routes (thin -- logic lives above)
-templates/         Jinja2 + HTMX + Tailwind, single-page UI
-tests/             pytest coverage for the core lifecycle
+  chunking.py    text -> overlapping chunks with source offsets
+  embeddings.py  the one local embedding model (sentence-transformers)
+  sdoc.py        the .sdoc file format: draft, finalize, open, search
+  library.py     lists drafts/finalized docs in the library folder
+  main.py        FastAPI routes (thin -- logic lives above)
+templates/       Jinja2 + HTMX + Tailwind, single-page UI
+tests/           pytest coverage (embeddings are monkeypatched with a
+                 deterministic test double -- see tests/conftest.py --
+                 so the suite runs fast, offline and without needing
+                 the real model installed)
 ```
 
 ## What's deferred (by design, for now)

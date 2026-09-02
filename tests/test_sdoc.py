@@ -1,22 +1,15 @@
 """Core lifecycle tests: draft -> finalize -> immutable -> search.
 
-These run against the real embeddings pipeline, but forced onto the
-built-in hashing backend (see app.embeddings) rather than
-sentence-transformers -- that keeps the suite fast, deterministic and
-network-independent, while still exercising genuine production code
-(not a hand-rolled test double that could drift from reality).
+Embeddings are monkeypatched with a deterministic test double (see
+tests/conftest.py) so these tests stay fast, offline and reproducible
+without needing the real sentence-transformers model installed.
 """
 from __future__ import annotations
 
 import pytest
 
-from app import embeddings, sdoc
+from app import sdoc
 from app.embeddings import EmbeddingError
-
-
-@pytest.fixture(autouse=True)
-def force_hashing_backend(monkeypatch):
-    monkeypatch.setattr(embeddings, "_load_backend", lambda: ("hashing", None))
 
 
 def test_create_and_read_draft(tmp_path):
