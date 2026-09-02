@@ -1,19 +1,18 @@
-"""Route-level tests for the save/finalize/open-with-native-dialog flow.
+"""Route-level tests for the browser-native open (file upload) and save
+(download) flows.
 
-The native OS dialogs (app.native_dialog) are monkeypatched here rather
-than exercised for real -- there's no GUI in CI, and unit-testing "did
-tkinter pop a window" isn't the point anyway. What matters, and what
-these tests actually check, is that app.main wires the dialog's result
-(or its absence, i.e. Cancel) into the right sdoc.py calls and redirects.
+No native OS dialogs here at all -- opening uses a plain multipart file
+upload (exactly what `<input type=file>` sends), and saving is just
+serving a file for the browser's own download manager to handle. Both
+are tested the same way any other FastAPI file upload/download endpoint
+would be: TestClient with `files=`, no GUI involved.
 """
 from __future__ import annotations
-
-from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, native_dialog, sdoc
+from app import main, sdoc
 
 
 @pytest.fixture
@@ -35,59 +34,68 @@ def test_save_creates_draft_and_redirects(client):
     assert sdoc.draft_path(main.LIBRARY_DIR, "hello-world").exists()
 
 
-def test_finalize_saves_to_native_dialog_chosen_path(client, tmp_path, monkeypatch):
+def test_finalize_writes_into_library_and_redirects(client):
     client.post("/save", data={"title": "Foo Doc", "content": "the quick brown fox"})
-    chosen = tmp_path / "wherever" / "custom-name.sdoc"
-    monkeypatch.setattr(native_dialog, "ask_save_path", lambda default_name: chosen)
-
     resp = client.post("/finalize", data={"doc": "foo-doc"}, follow_redirects=False)
 
     assert resp.status_code == 303
-    assert resp.headers["location"] == f"/?path={quote(str(chosen))}"
-    assert chosen.exists()
+    assert resp.headers["location"] == "/?doc=foo-doc"
+    assert sdoc.final_path(main.LIBRARY_DIR, "foo-doc").exists()
     assert not sdoc.draft_path(main.LIBRARY_DIR, "foo-doc").exists()
 
 
-def test_finalize_cancel_leaves_draft_untouched(client, monkeypatch):
-    client.post("/save", data={"title": "Cancel Doc", "content": "content"})
-    monkeypatch.setattr(native_dialog, "ask_save_path", lambda default_name: None)
-    monkeypatch.setattr(native_dialog, "available", lambda: True)
+def test_download_serves_the_finalized_file(client, tmp_path):
+    client.post("/save", data={"title": "Downloadable", "content": "grab this file"})
+    client.post("/finalize", data={"doc": "downloadable"})
 
-    resp = client.post("/finalize", data={"doc": "cancel-doc"}, follow_redirects=False)
+    resp = client.get("/documents/downloadable/download")
 
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/?doc=cancel-doc"
-    assert sdoc.draft_path(main.LIBRARY_DIR, "cancel-doc").exists()
-    assert not sdoc.final_path(main.LIBRARY_DIR, "cancel-doc").exists()
-
-
-def test_finalize_falls_back_to_library_when_no_dialog_available(client, monkeypatch):
-    """Headless server, no Tk -- shouldn't brick finalize entirely."""
-    client.post("/save", data={"title": "Headless Doc", "content": "content"})
-    monkeypatch.setattr(native_dialog, "ask_save_path", lambda default_name: None)
-    monkeypatch.setattr(native_dialog, "available", lambda: False)
-
-    resp = client.post("/finalize", data={"doc": "headless-doc"}, follow_redirects=False)
-
-    assert resp.status_code == 303
-    assert sdoc.final_path(main.LIBRARY_DIR, "headless-doc").exists()
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].endswith('filename="downloadable.sdoc"')
+    on_disk = sdoc.final_path(main.LIBRARY_DIR, "downloadable").read_bytes()
+    assert resp.content == on_disk
 
 
-def test_browse_open_redirects_to_chosen_path(client, monkeypatch, tmp_path):
-    chosen = tmp_path / "somewhere.sdoc"
-    client.post("/save", data={"title": "Browsable", "content": "browsable content"})
-    monkeypatch.setattr(native_dialog, "ask_save_path", lambda default_name: chosen)
-    client.post("/finalize", data={"doc": "browsable"})
+def test_download_missing_document_404s(client):
+    resp = client.get("/documents/does-not-exist/download")
+    assert resp.status_code == 404
 
-    monkeypatch.setattr(native_dialog, "ask_open_path", lambda: chosen)
-    resp = client.get("/browse/open", follow_redirects=False)
+
+def test_open_upload_adds_valid_sdoc_to_library(client, tmp_path):
+    # Build a real finalized .sdoc somewhere outside the library to upload.
+    source_dir = tmp_path / "source"
+    sdoc.create_draft(source_dir, "myrecipe", title="My Recipe", content="mix flour, sugar, and eggs")
+    built = sdoc.finalize_draft(source_dir, "myrecipe")
+
+    resp = client.post(
+        "/open-upload",
+        files={"file": ("myrecipe.sdoc", built.read_bytes(), "application/octet-stream")},
+        follow_redirects=False,
+    )
 
     assert resp.status_code == 303
-    assert resp.headers["location"] == f"/?path={quote(str(chosen))}"
+    assert resp.headers["location"] == "/?doc=myrecipe"
+    assert sdoc.final_path(main.LIBRARY_DIR, "myrecipe").exists()
 
 
-def test_browse_open_cancel_redirects_home(client, monkeypatch):
-    monkeypatch.setattr(native_dialog, "ask_open_path", lambda: None)
-    resp = client.get("/browse/open", follow_redirects=False)
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/"
+def test_open_upload_rejects_garbage_file(client):
+    resp = client.post(
+        "/open-upload",
+        files={"file": ("not-real.sdoc", b"this is not a sqlite database", "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    assert "not a valid .sdoc file" in resp.text
+    # nothing should have been added to the library
+    assert list(main.LIBRARY_DIR.glob("*.sdoc")) == [] if main.LIBRARY_DIR.exists() else True
+
+
+def test_open_upload_dedupes_name_collisions(client, tmp_path):
+    source_dir = tmp_path / "source"
+    sdoc.create_draft(source_dir, "dup", title="Dup", content="first version")
+    first = sdoc.finalize_draft(source_dir, "dup")
+
+    client.post("/open-upload", files={"file": ("dup.sdoc", first.read_bytes(), "application/octet-stream")})
+    resp = client.post("/open-upload", files={"file": ("dup.sdoc", first.read_bytes(), "application/octet-stream")}, follow_redirects=False)
+
+    assert resp.headers["location"] == "/?doc=dup-2"

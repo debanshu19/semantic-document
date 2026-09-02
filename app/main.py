@@ -4,6 +4,17 @@ a panel below the editor via HTMX partial swaps (no page reload).
 
 Routes stay thin; all real logic lives in app.sdoc / app.library.
 
+File browsing is handled entirely with standard browser mechanisms --
+no OS-specific native dialogs, no extra permissions, no focus-stealing
+quirks to work around:
+  - Opening a .sdoc from anywhere on disk: a plain `<input type=file>`,
+    which the browser renders with the OS's own native file picker and
+    uploads the bytes to /open-upload.
+  - Saving a finalized .sdoc: it's written into the library, and the
+    finalized view offers a `<a download>` link, which the browser's own
+    download manager handles (including "ask where to save" if the
+    user's browser is configured that way).
+
 Plain web app, run with `uvicorn app.main:app`. Document data lives in
 the user's home directory rather than next to the source code, so the
 *documents* stay portable (copy `~/SemanticDocument/library/` anywhere)
@@ -13,14 +24,15 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import native_dialog, sdoc
+from app import sdoc
 from app.library import list_library
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -57,7 +69,6 @@ def _render(request, entries, *, mode, doc_ref=None, is_external=False, draft=No
             "draft": draft,
             "finalized": finalized,
             "error": error,
-            "dialogs_available": native_dialog.available(),
         },
     )
 
@@ -110,38 +121,53 @@ def save(title: str = Form(...), content: str = Form(...), doc: str = Form("")):
 
 
 @app.post("/finalize")
-async def finalize(doc: str = Form(...)):
-    """Finalizing is the one truly permanent 'save' in this app -- so it's
-    the one place we pop a native Save dialog and ask the user exactly
-    where the resulting .sdoc should live. This must stay `async def`
-    (see app/native_dialog.py) so the dialog runs on the same thread as
-    the event loop rather than a thread-pool worker.
-    """
-    chosen = native_dialog.ask_save_path(default_name=doc)
-    if chosen is None:
-        if native_dialog.available():
-            # User hit Cancel in the dialog -- not an error, just a no-op.
-            return RedirectResponse(f"/?doc={quote(doc)}", status_code=303)
-        # No display/Tk available at all (e.g. headless server) -- fall
-        # back to the old behavior of finalizing straight into the library.
-        chosen = sdoc.final_path(LIBRARY_DIR, doc)
-
+def finalize(doc: str = Form(...)):
     try:
-        sdoc.finalize_draft(LIBRARY_DIR, doc, output_path=chosen)
+        sdoc.finalize_draft(LIBRARY_DIR, doc)
     except sdoc.SDocError as exc:
         return RedirectResponse(f"/?doc={quote(doc)}&error={quote(str(exc))}", status_code=303)
-    return RedirectResponse(f"/?path={quote(str(chosen))}", status_code=303)
+    return RedirectResponse(f"/?doc={quote(doc)}", status_code=303)
 
 
-@app.get("/browse/open")
-async def browse_open(doc: str = ""):
-    """Pops a native 'Open' dialog filtered to .sdoc files. `doc` is just
-    carried through so Cancel returns you to wherever you were."""
-    chosen = native_dialog.ask_open_path()
-    if chosen is None:
-        fallback = f"/?doc={quote(doc)}" if doc else "/"
-        return RedirectResponse(fallback, status_code=303)
-    return RedirectResponse(f"/?path={quote(str(chosen))}", status_code=303)
+@app.get("/documents/{name}/download")
+def download(name: str):
+    """Serves a finalized .sdoc for the browser's own download manager to
+    handle -- this is the 'ask the user where to save it' step, done
+    entirely with a standard HTTP download rather than any OS-specific
+    dialog."""
+    final = sdoc.final_path(LIBRARY_DIR, name)
+    if not final.exists():
+        raise HTTPException(404, "Document not found.")
+    return FileResponse(final, filename=final.name, media_type="application/octet-stream")
+
+
+@app.post("/open-upload")
+async def open_upload(request: Request, file: UploadFile):
+    """Opening a .sdoc 'from anywhere on disk' via a plain browser file
+    input -- the browser renders the OS's native file picker itself, so
+    there's no server-side dialog/focus trickery needed at all. The
+    uploaded bytes are validated and copied into the library so the
+    document becomes a normal, searchable library entry from then on.
+    """
+    raw_name = Path(file.filename or "imported").stem
+    base_slug = _slugify(raw_name)
+    content = await file.read()
+
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=LIBRARY_DIR, suffix=".sdoc.uploadtmp", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        sdoc.open_finalized(tmp_path)  # validates it's actually a well-formed .sdoc
+    except Exception:  # noqa: BLE001 - any failure means "not a valid .sdoc"
+        tmp_path.unlink(missing_ok=True)
+        entries = list_library(LIBRARY_DIR)
+        return _render(request, entries, mode="new", error=f"'{file.filename}' is not a valid .sdoc file.")
+
+    name = _unique_name(base_slug)
+    os.replace(tmp_path, sdoc.final_path(LIBRARY_DIR, name))
+    return RedirectResponse(f"/?doc={quote(name)}", status_code=303)
 
 
 @app.get("/search", response_class=HTMLResponse)
