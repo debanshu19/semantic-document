@@ -1,0 +1,14 @@
+{% if not query %}
+{% elif hits %}
+  {% for h in hits %}
+  <div class="border border-slate-200 rounded-lg p-3">
+    <div class="flex justify-between text-xs text-slate-400 mb-1">
+      <span>chunk #{{ h.chunk_index }} - offset {{ h.start }}-{{ h.end }}</span>
+      <span>score {{ "%.2f"|format(h.score) }} (keyword {{ "%.2f"|format(h.keyword_score) }} / semantic {{ "%.2f"|format(h.semantic_score) }})</span>
+    </div>
+    <p class="text-sm text-slate-700">{{ h.text }}</p>
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="text-sm text-slate-400">No matches.</p>
+{% endif %}

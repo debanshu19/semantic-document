@@ -1,0 +1,29 @@
+[project]
+name = "semantic-doc"
+version = "0.1.0"
+description = "Semantic Document (.sdoc) - immutable, locally-searchable document snapshots"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+# Not declared as a uv extra on purpose: uv resolves lockfiles across
+# *all* declared extras regardless of which one you pass to `--extra`,
+# so even having it listed here would drag torch's full dependency tree
+# into every `uv sync`. Install it yourself when you want the real
+# model instead of the built-in hashing fallback:
+#
+#   uv pip install sentence-transformers
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
