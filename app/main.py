@@ -22,9 +22,11 @@ even though the app itself is just a regular local web server.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -35,11 +37,38 @@ from fastapi.templating import Jinja2Templates
 from app import sdoc
 from app.library import list_library
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 LIBRARY_DIR = Path(os.environ.get("SDOC_LIBRARY_DIR", Path.home() / "SemanticDocument" / "library"))
 TEMPLATES_DIR = BASE_DIR / "templates"
 
-app = FastAPI(title="Semantic Document")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Load the embedding model once at startup rather than on the first
+    search/finalize request. Loading it lazily works fine functionally,
+    but it takes several seconds the first time (loading weights from
+    disk) -- doing that mid-request, with zero loading indicator, looks
+    exactly like 'search/finalize is broken' rather than 'still starting
+    up'. Failure here is not fatal: it just means the first real request
+    pays the cost instead, and gets a clear EmbeddingError if the model
+    genuinely isn't installed.
+    """
+    try:
+        from app.embeddings import embed_query
+
+        embed_query("warmup")
+        logger.info("Embedding model pre-warmed and ready.")
+    except Exception:  # noqa: BLE001 - best-effort warmup only
+        logger.warning(
+            "Embedding model could not be pre-warmed at startup; will retry lazily on first use.",
+            exc_info=True,
+        )
+    yield
+
+
+app = FastAPI(title="Semantic Document", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 

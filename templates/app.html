@@ -87,10 +87,14 @@
 <section class="bg-white border border-slate-200 rounded-xl p-5">
   <h2 class="font-semibold mb-3 text-sm uppercase tracking-wide text-slate-500">Search</h2>
   {% if mode == "finalized" %}
-    <input type="search" name="q" placeholder="Search this document..."
-      hx-get="/search?{% if is_external %}path={{ doc_ref | urlencode }}{% else %}doc={{ doc_ref }}{% endif %}"
-      hx-trigger="keyup changed delay:300ms, search" hx-target="#search-results" hx-swap="innerHTML"
-      class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400" />
+    <div class="relative">
+      <input type="search" name="q" placeholder="Search this document..."
+        hx-get="/search?{% if is_external %}path={{ doc_ref | urlencode }}{% else %}doc={{ doc_ref }}{% endif %}"
+        hx-trigger="keyup changed delay:300ms, search" hx-target="#search-results" hx-swap="innerHTML"
+        hx-indicator="#search-spinner"
+        class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400" />
+      <span id="search-spinner" class="htmx-indicator absolute right-3 top-2.5 text-xs text-slate-400">Searching...</span>
+    </div>
     <div id="search-results" class="mt-4 space-y-3"></div>
   {% else %}
     <p class="text-sm text-slate-400">Search unlocks once this document is finalized -- semantic search runs against the embeddings baked in at save time.</p>
