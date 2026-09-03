@@ -17,13 +17,18 @@ dev = [
     "httpx>=0.27",
 ]
 
-# Not declared as a uv extra on purpose: uv resolves lockfiles across
-# *all* declared extras regardless of which one you pass to `--extra`,
-# so even having it listed here would drag torch's full dependency tree
-# into every `uv sync`. Install it yourself when you want the real
-# model instead of the built-in hashing fallback:
+# sentence-transformers (the app's one and only embedding backend) is
+# deliberately NOT declared as a dependency or uv extra here: uv resolves
+# lockfiles across *all* declared extras regardless of which one you pass
+# to `--extra`, so even having it listed would drag torch's full
+# dependency tree into every `uv sync`. Install it with:
 #
-#   uv pip install sentence-transformers
+#   ./scripts/install-embeddings.sh
+#
+# Careful: since it's not declared here, running `uv sync` after
+# installing it will remove it again (uv syncs the venv to exactly match
+# what's declared). Just re-run the install script if that happens --
+# the model weights stay cached either way, so it's fast.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

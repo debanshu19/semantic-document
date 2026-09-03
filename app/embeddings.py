@@ -2,21 +2,32 @@
 ever -- Phase 1's privacy model depends on that (see docs/design.md
 section 9).
 
-There is deliberately exactly one embedding model. The model is
-downloaded from Hugging Face on first use and cached under
-~/.cache/torch/sentence_transformers -- after that it's fully offline.
+There is deliberately exactly one embedding model. The model weights are
+cached under ~/.cache/huggingface the first time they're fetched (see
+scripts/install-embeddings.sh, which handles that one-time download).
+After that, this module runs in Hugging Face's offline mode -- it will
+NEVER make a network call on its own. That's not just a corporate-proxy
+workaround; it's the correct behavior for an app whose entire privacy
+model depends on "no cloud calls, ever." If the model isn't cached yet,
+that's a setup step to run once, not something finalize should silently
+reach out to the internet for on every request.
 
-If it can't be loaded (not installed, no network for the first
-download, etc.), embed_texts raises EmbeddingError. app.sdoc treats that
-as fatal-but-safe: the draft stays untouched and no finalized artifact
-is published -- this is the design doc's FAILED state, working exactly
-as intended rather than silently degrading to a weaker model.
+If it can't be loaded (not installed, or not cached yet), embed_texts
+raises EmbeddingError. app.sdoc treats that as fatal-but-safe: the draft
+stays untouched and no finalized artifact is published -- this is the
+design doc's FAILED state, working exactly as intended rather than
+silently degrading to a weaker model.
 """
 from __future__ import annotations
 
 import functools
+import os
 
 import numpy as np
+
+# Must be set before `import sentence_transformers` / `import huggingface_hub`
+# pulls in its networking code -- see module docstring.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
@@ -35,17 +46,17 @@ def _get_model():
     except ImportError as exc:  # pragma: no cover - exercised via EmbeddingError path
         raise EmbeddingError(
             "sentence-transformers is not installed. Run "
-            "`uv pip install sentence-transformers` (requires network access "
-            "to Hugging Face on first use to download the model)."
+            "./scripts/install-embeddings.sh to install it and cache the model."
         ) from exc
 
     try:
         return SentenceTransformer(MODEL_NAME)
     except Exception as exc:  # noqa: BLE001 - any failure here is fatal for finalize
         raise EmbeddingError(
-            f"Could not load embedding model '{MODEL_NAME}'. If this is the "
-            "first run, the model needs to download from Hugging Face once -- "
-            f"check your network/proxy settings. Original error: {exc}"
+            f"Could not load embedding model '{MODEL_NAME}'. It needs to be "
+            "downloaded and cached once before first use -- run "
+            "./scripts/install-embeddings.sh (this app runs fully offline "
+            f"otherwise and will not fetch it automatically). Original error: {exc}"
         ) from exc
 
 

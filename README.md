@@ -50,17 +50,22 @@ Semantic Document uses exactly one embedding model --
 document text or query ever leaves your machine. It's kept as an
 optional (rather than hard) dependency only because it pulls in torch, a
 large download; functionally, it's the app's one and only embedding
-backend, no fallback. `scripts/install-embeddings.sh` handles installing
-it (including a plain-PyPI fallback and troubleshooting tips if it hangs
-on a corporate proxy/VPN -- torch is large enough that some internal
-package mirrors redirect it to cloud storage domains that end up
-blocked). It downloads itself from Hugging Face the first time you
-finalize a document, then runs fully offline after that. If it's not
-installed (or that first download can't complete), finalize fails
-safely and clearly: your draft is untouched, nothing half-finished gets
-published. That's the design doc's intended FAILED state working as
-designed, not a bug -- there's no silent degrading to a
-lower-quality substitute model.
+backend, no fallback.
+
+`scripts/install-embeddings.sh` handles the one-time setup: installs the
+package and pre-downloads/caches the model weights (~80MB, cached under
+`~/.cache/huggingface`). After that, the app runs the model in Hugging
+Face's **offline mode** by default (`app/embeddings.py` sets
+`HF_HUB_OFFLINE=1`) -- it will never make a network call on its own.
+That's not just a corporate-network workaround; it's the correct
+behavior for an app whose whole privacy model is "no cloud calls, ever."
+If the model isn't cached yet, that's a setup step to run once, not
+something finalize should silently reach out to the internet for.
+
+If it's not installed/cached, finalize fails safely and clearly: your
+draft is untouched, nothing half-finished gets published. That's the
+design doc's intended FAILED state working as designed, not a bug --
+there's no silent degrading to a lower-quality substitute model.
 
 ## Using it
 

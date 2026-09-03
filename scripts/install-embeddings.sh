@@ -1,82 +1,108 @@
 #!/usr/bin/env bash
-# Installs the real sentence-transformers embedding model for Semantic
-# Document. Run from anywhere:
+# Installs and caches the real sentence-transformers embedding model for
+# Semantic Document. Run from anywhere:
 #
 #   ./scripts/install-embeddings.sh
 #
-# This is a one-time step -- once installed, the model itself downloads
-# from Hugging Face on first use (~80MB) and everything runs fully
-# offline after that.
+# This is a one-time setup step. Once it finishes, the app runs the
+# model fully offline forever after (see app/embeddings.py) -- that's
+# the whole point of the app's privacy model, not just a workaround.
+#
+# On the Walmart corporate network, two internal mirrors make this work
+# without ever touching the public internet:
+#   - PyPI package:  the mlplatforms-pypi / external-pypi Artifactory mirrors
+#   - Model weights: the internal Hugging Face Hub Artifactory mirror
+# Both sit behind the corporate TLS-inspecting proxy, so we also need to
+# trust the Walmart Root/Intermediate CAs (exported from the System
+# keychain) alongside the normal public CA bundle.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WALMART_INDEX="https://pypi.ci.artifacts.walmart.com/artifactory/api/pypi/external-pypi/simple"
+WALMART_PYPI_INDEX="https://pypi.ci.artifacts.walmart.com/artifactory/api/pypi/mlplatforms-pypi/simple"
 WALMART_HOST="pypi.ci.artifacts.walmart.com"
+HF_MIRROR="https://ci.artifacts.walmart.com/artifactory/api/huggingfaceml/hub-huggingfaceml-release-remote"
+CA_BUNDLE="${TMPDIR:-/tmp}/semantic-document-ca-bundle.pem"
 
 echo "=============================================================="
-echo " Installing sentence-transformers"
+echo " Step 1/3: Installing the sentence-transformers package"
 echo "=============================================================="
-echo ""
-echo "Heads up: this pulls in torch, a large (~200MB+) download. On"
-echo "some corporate networks/VPNs, the internal package mirror"
-echo "redirects large wheels to Azure Blob Storage, and that specific"
-echo "domain can be blocked -- if this hangs for more than 2-3 minutes"
-echo "with your terminal doing nothing, that's almost certainly what's"
-echo "happening. Ctrl+C and see the 'If it hangs' section below."
-echo ""
 
 install_with() {
     local index_url="$1"
     local host
     host=$(echo "$index_url" | sed -E 's#https?://([^/]+).*#\1#')
-
     if command -v uv >/dev/null 2>&1; then
-        uv pip install sentence-transformers \
-            --index-url "$index_url" \
-            --allow-insecure-host "$host"
+        uv pip install sentence-transformers --index-url "$index_url" --allow-insecure-host "$host"
     else
         pip install sentence-transformers --index-url "$index_url"
     fi
 }
 
-echo "--> Trying the Walmart internal mirror first..."
-if install_with "$WALMART_INDEX"; then
-    echo "Installed via internal mirror."
-else
-    echo ""
-    echo "--> Internal mirror failed or was interrupted. Trying public PyPI"
-    echo "    directly (works if you're off VPN / on an unrestricted network)..."
+if ! install_with "$WALMART_PYPI_INDEX"; then
+    echo "--> Walmart mirror failed. Trying public PyPI (works off VPN)..."
     install_with "https://pypi.org/simple"
 fi
 
 echo ""
 echo "=============================================================="
-echo " Verifying it actually works"
+echo " Step 2/3: Trusting the corporate proxy's TLS certificates"
 echo "=============================================================="
-echo "(this downloads the ~80MB model from Hugging Face once)"
+echo "(needed because the proxy re-signs HTTPS traffic with Walmart's"
+echo " own certificate authority, which Python doesn't trust by default)"
 echo ""
 
-if command -v uv >/dev/null 2>&1; then
-    uv run python -c "
-from sentence_transformers import SentenceTransformer
-model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-vec = model.encode('hello world')
-print(f'Success -- embedding dimension: {len(vec)}')
-"
+if command -v security >/dev/null 2>&1; then
+    PY_CACERT=$(uv run python -c "import certifi; print(certifi.where())" 2>/dev/null || python3 -c "import certifi; print(certifi.where())")
+    cp "$PY_CACERT" "$CA_BUNDLE"
+    for cert in "WalmartRootCA-SHA256" "WalmartIntermediateCA01-SHA256" "WalmartIssuingCA-2FA-01-SHA256" "WalmartIssuingCA-2FA-02-SHA256"; do
+        security find-certificate -c "$cert" -p /Library/Keychains/System.keychain 2>/dev/null >> "$CA_BUNDLE" || true
+    done
+    echo "Combined CA bundle written to $CA_BUNDLE"
 else
-    python -c "
-from sentence_transformers import SentenceTransformer
-model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-vec = model.encode('hello world')
-print(f'Success -- embedding dimension: {len(vec)}')
-"
+    echo "Not on macOS (no 'security' tool) -- skipping. If the next step"
+    echo "fails with a certificate error, ask your platform team for the"
+    echo "corporate root CA in PEM form and set REQUESTS_CA_BUNDLE/SSL_CERT_FILE"
+    echo "to point at it."
+    CA_BUNDLE=""
 fi
 
 echo ""
-echo "Done. Restart the app and Finalize should work with real embeddings now."
+echo "=============================================================="
+echo " Step 3/3: Downloading and caching the model (one-time, ~80MB)"
+echo "=============================================================="
+echo "Using the internal Hugging Face mirror: $HF_MIRROR"
 echo ""
-echo "If it hangs:"
+
+HF_ENDPOINT="$HF_MIRROR" \
+REQUESTS_CA_BUNDLE="$CA_BUNDLE" \
+SSL_CERT_FILE="$CA_BUNDLE" \
+uv run python -c "
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+vec = model.encode('hello world')
+print(f'Success -- embedding dimension: {len(vec)}')
+"
+
+echo ""
+echo "=============================================================="
+echo " Verifying app.embeddings works fully offline from here on"
+echo "=============================================================="
+uv run python -c "
+from app.embeddings import embed_texts, embed_query
+import numpy as np
+vecs = embed_texts(['the quick brown fox', 'a lazy sleepy dog'])
+q = embed_query('quick fox')
+print('Cosine sim to fox sentence (should be high):', float(np.dot(q, vecs[0])))
+print('Cosine sim to dog sentence (should be low):', float(np.dot(q, vecs[1])))
+"
+
+echo ""
+echo "Done. The model is cached at ~/.cache/huggingface and the app runs"
+echo "fully offline from here -- restart it and Finalize will use real"
+echo "semantic embeddings."
+echo ""
+echo "If step 1 or 3 hangs instead of failing outright:"
 echo "  1. Try again off VPN / on a different network (home wifi, hotspot)."
 echo "  2. Request an allowlist exception for blob.core.windows.net at"
 echo "     https://puppy.walmart.com/url-allowlist (auto-approved, ~5 min)."
