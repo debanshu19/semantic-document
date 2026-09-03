@@ -4,7 +4,7 @@
   <div class="border border-slate-200 rounded-lg p-3">
     <div class="flex justify-between text-xs text-slate-400 mb-1">
       <span>chunk #{{ h.chunk_index }} - offset {{ h.start }}-{{ h.end }}</span>
-      <span>score {{ "%.2f"|format(h.score) }} (keyword {{ "%.2f"|format(h.keyword_score) }} / semantic {{ "%.2f"|format(h.semantic_score) }})</span>
+      <span>score {{ "%.4f"|format(h.score) }} (keyword {{ "%.2f"|format(h.keyword_score) }} / semantic {{ "%.2f"|format(h.semantic_score) }}{% if h.rerank_score is not none %} / reranked {{ "%.4f"|format(h.rerank_score) }}{% endif %})</span>
     </div>
     <p class="text-sm text-slate-700">{{ h.text }}</p>
   </div>

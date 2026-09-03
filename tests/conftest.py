@@ -1,11 +1,11 @@
 """Shared pytest fixtures.
 
-The app ships exactly one embedding model (sentence-transformers) --
-see app/embeddings.py. Downloading/running the real model in every test
-run would be slow, network-dependent, and non-deterministic, so tests
-monkeypatch the embed_texts/embed_query functions with a small
-deterministic test double instead. This is a test-only concern; it has
-no bearing on how the app behaves in production.
+The app ships exactly one embedding model (sentence-transformers) and
+one cross-encoder reranker -- see app/embeddings.py and app/reranker.py.
+Downloading/running the real models in every test run would be slow,
+network-dependent, and non-deterministic, so tests monkeypatch both with
+small deterministic test doubles instead. This is a test-only concern;
+it has no bearing on how the app behaves in production.
 """
 from __future__ import annotations
 
@@ -35,7 +35,24 @@ def _fake_embed_texts(texts: list[str]) -> np.ndarray:
     return vectors
 
 
+def _fake_rerank(query: str, candidates: list[str]) -> list[float]:
+    """Deterministic word-overlap scorer, squashed to (0, 1) -- stands in
+    for the real cross-encoder so reranking-dependent tests stay fast,
+    offline and reproducible."""
+    query_words = set(query.lower().split())
+    scores = []
+    for text in candidates:
+        overlap = len(query_words & set(text.lower().split()))
+        scores.append(overlap / (overlap + 1))
+    return scores
+
+
 @pytest.fixture(autouse=True)
 def fake_embeddings(monkeypatch):
     monkeypatch.setattr(sdoc, "embed_texts", _fake_embed_texts)
     monkeypatch.setattr(sdoc, "embed_query", lambda q: _fake_embed_texts([q])[0])
+
+
+@pytest.fixture(autouse=True)
+def fake_reranker(monkeypatch):
+    monkeypatch.setattr(sdoc, "cross_encoder_rerank", _fake_rerank)

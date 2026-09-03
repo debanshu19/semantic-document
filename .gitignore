@@ -8,6 +8,7 @@ node_modules/
 .DS_Store
 .vscode/
 .idea/
+.debug-library/
 
 # user document library - contains real user content, not source code
 library/*

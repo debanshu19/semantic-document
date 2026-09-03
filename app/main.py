@@ -46,14 +46,15 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Load the embedding model once at startup rather than on the first
-    search/finalize request. Loading it lazily works fine functionally,
-    but it takes several seconds the first time (loading weights from
-    disk) -- doing that mid-request, with zero loading indicator, looks
-    exactly like 'search/finalize is broken' rather than 'still starting
-    up'. Failure here is not fatal: it just means the first real request
-    pays the cost instead, and gets a clear EmbeddingError if the model
-    genuinely isn't installed.
+    """Load the embedding model (and reranker, if installed) once at
+    startup rather than on the first search/finalize request. Loading
+    them lazily works fine functionally, but each takes a few seconds
+    the first time (loading weights from disk) -- doing that mid-request,
+    with zero loading indicator, looks exactly like 'search/finalize is
+    broken' rather than 'still starting up'. Failure here is not fatal
+    for either: it just means the first real request pays the cost
+    instead (embeddings raise a clear EmbeddingError if genuinely not
+    installed; the reranker just falls back to first-stage ranking).
     """
     try:
         from app.embeddings import embed_query
@@ -65,6 +66,15 @@ async def lifespan(_app: FastAPI):
             "Embedding model could not be pre-warmed at startup; will retry lazily on first use.",
             exc_info=True,
         )
+
+    try:
+        from app.reranker import rerank
+
+        rerank("warmup", ["warmup"])
+        logger.info("Reranker model pre-warmed and ready.")
+    except Exception:  # noqa: BLE001 - best-effort warmup only; reranker is optional anyway
+        logger.warning("Reranker could not be pre-warmed at startup; search will use first-stage ranking only.")
+
     yield
 
 

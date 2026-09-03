@@ -100,6 +100,48 @@ def test_search_ranks_relevant_chunk_first(tmp_path):
     assert "black holes" in hits2[0].text.lower()
 
 
+def test_search_natural_language_query_still_gets_keyword_signal(tmp_path):
+    """Regression test for the implicit-AND FTS5 bug: a plain space-
+    separated MATCH query requires *every* word in the same chunk, so a
+    natural-language query with common words (the/a/is/...) almost never
+    matched anything, silently zeroing out the keyword signal entirely.
+    _build_fts_query ORs the terms together instead."""
+    sdoc.create_draft(
+        tmp_path, "doc11", title="Doc Eleven",
+        content="The database choices for this system include a real-time store and a durable store.",
+    )
+    final = sdoc.finalize_draft(tmp_path, "doc11")
+
+    hits = sdoc.search(final, "what are the database choices")
+    assert hits
+    assert hits[0].keyword_score > 0.0
+
+
+def test_search_falls_back_gracefully_when_reranker_unavailable(tmp_path, monkeypatch):
+    """Reranking is a nice-to-have at search time (unlike embeddings at
+    finalize time) -- if it's unavailable, search must still work, just
+    ranked by the first-stage fused score instead of a rerank score."""
+    monkeypatch.setattr(sdoc, "cross_encoder_rerank", lambda query, candidates: None)
+
+    content = "Tomatoes need sunlight.\n\nBlack holes warp spacetime."
+    sdoc.create_draft(tmp_path, "doc12", title="Doc Twelve", content=content)
+    final = sdoc.finalize_draft(tmp_path, "doc12")
+
+    hits = sdoc.search(final, "tomatoes sunlight")
+    assert hits
+    assert hits[0].rerank_score is None
+    assert "tomatoes" in hits[0].text.lower()
+
+
+def test_reciprocal_rank_fusion_rewards_agreement_between_rankings():
+    keyword = {1: 10.0, 2: 5.0, 3: 1.0}
+    semantic = {2: 0.9, 1: 0.5, 3: 0.1}
+    fused = sdoc._reciprocal_rank_fusion(keyword, semantic)
+    # chunk 2 is #2 in keyword and #1 in semantic -- best combined agreement
+    assert fused[2] >= fused[1]
+    assert fused[1] >= fused[3]
+
+
 def test_finalize_produces_exactly_one_file_no_sidecars(tmp_path):
     """The whole point of .sdoc is one portable artifact -- no -wal/-shm
     journal sidecars left behind (a real bug caught during manual testing:

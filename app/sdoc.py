@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -32,6 +33,7 @@ import numpy as np
 
 from app.chunking import chunk_text
 from app.embeddings import EmbeddingError, embed_query, embed_texts
+from app.reranker import rerank as cross_encoder_rerank
 
 SCHEMA_VERSION = 1
 DRAFT_SUFFIX = ".sdraft.json"
@@ -269,6 +271,7 @@ class SearchHit:
     score: float
     keyword_score: float = 0.0
     semantic_score: float = 0.0
+    rerank_score: float | None = None
 
 
 def open_finalized(path: Path) -> dict:
@@ -283,12 +286,26 @@ def open_finalized(path: Path) -> dict:
         conn.close()
 
 
-def search(path: Path, query: str, top_k: int = 5) -> list[SearchHit]:
-    """Hybrid search: FTS5 keyword ranking + brute-force cosine similarity
-    over the stored embeddings, blended 50/50 after min-max normalization.
+CANDIDATE_POOL_SIZE = 20
 
-    Brute force is plenty for a single-document-sized corpus. Revisit
-    (e.g. sqlite-vec) only if profiling ever says otherwise -- YAGNI.
+
+def search(path: Path, query: str, top_k: int = 5) -> list[SearchHit]:
+    """Two-stage hybrid search.
+
+    Stage 1 (recall): keyword (FTS5/BM25) and semantic (cosine
+    similarity over stored embeddings) rankings are fused via
+    Reciprocal Rank Fusion into a candidate shortlist. RRF combines
+    rankings by *position*, not raw score, which matters here because
+    BM25 and cosine similarity live on completely incomparable scales --
+    no normalization scheme reconciles that reliably, but rank position
+    needs no reconciling at all.
+
+    Stage 2 (precision): a cross-encoder reranks that shortlist by
+    jointly scoring (query, chunk) pairs -- more accurate than comparing
+    independently-embedded vectors, because the model actually sees the
+    query and the chunk together. Falls back to the stage-1 fused
+    ranking if the reranker isn't available; brute force over a handful
+    of chunks is cheap regardless.
     """
     query = query.strip()
     if not query:
@@ -303,31 +320,34 @@ def search(path: Path, query: str, top_k: int = 5) -> list[SearchHit]:
         if not chunks:
             return []
 
-        keyword_scores = _keyword_scores(conn, query)
-        semantic_scores = _semantic_scores(conn, query, list(chunks.keys()))
+        raw_keyword = _keyword_scores(conn, query)
+        raw_semantic = _semantic_scores(conn, query, list(chunks.keys()))
+        keyword_norm = _min_max_normalize(raw_keyword)
+        semantic_norm = _min_max_normalize(raw_semantic)
 
-        keyword_scores = _min_max_normalize(keyword_scores)
-        semantic_scores = _min_max_normalize(semantic_scores)
+        fused = _reciprocal_rank_fusion(raw_keyword, raw_semantic)
+        shortlist_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:CANDIDATE_POOL_SIZE]
 
-        combined: list[SearchHit] = []
-        all_ids = set(keyword_scores) | set(semantic_scores)
-        for chunk_id in all_ids:
-            k = keyword_scores.get(chunk_id, 0.0)
-            s = semantic_scores.get(chunk_id, 0.0)
+        rerank_scores = cross_encoder_rerank(query, [chunks[cid]["text"] for cid in shortlist_ids])
+
+        results: list[SearchHit] = []
+        for i, chunk_id in enumerate(shortlist_ids):
             info = chunks[chunk_id]
-            combined.append(
+            rerank_score = rerank_scores[i] if rerank_scores is not None else None
+            results.append(
                 SearchHit(
                     chunk_index=chunk_id,
                     text=info["text"],
                     start=info["start"],
                     end=info["end"],
-                    score=0.5 * k + 0.5 * s,
-                    keyword_score=k,
-                    semantic_score=s,
+                    score=rerank_score if rerank_score is not None else fused[chunk_id],
+                    keyword_score=keyword_norm.get(chunk_id, 0.0),
+                    semantic_score=semantic_norm.get(chunk_id, 0.0),
+                    rerank_score=rerank_score,
                 )
             )
-        combined.sort(key=lambda h: h.score, reverse=True)
-        return combined[:top_k]
+        results.sort(key=lambda h: h.score, reverse=True)
+        return results[:top_k]
     finally:
         conn.close()
 
@@ -336,7 +356,7 @@ def _keyword_scores(conn: sqlite3.Connection, query: str) -> dict[int, float]:
     try:
         rows = conn.execute(
             "SELECT rowid, bm25(chunks_fts) FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank",
-            (query,),
+            (_build_fts_query(query),),
         ).fetchall()
     except sqlite3.OperationalError:
         # FTS5 raises on malformed MATCH syntax (e.g. bare punctuation) --
@@ -344,6 +364,20 @@ def _keyword_scores(conn: sqlite3.Connection, query: str) -> dict[int, float]:
         return {}
     # bm25() returns *lower is better*; flip sign so higher is better, matching semantic scores.
     return {row[0]: -row[1] for row in rows}
+
+
+def _build_fts_query(query: str) -> str:
+    """Plain space-separated FTS5 MATCH queries default to an implicit
+    AND between terms -- so a natural-language query like 'what are the
+    database choices' only matches chunks containing *all five* words,
+    which is almost never, for almost any real query. OR the terms
+    together instead: keyword search becomes 'any of these terms',
+    weighted by BM25's own IDF (so common words still contribute little
+    relative to rarer, more distinctive ones)."""
+    terms = re.findall(r"\w+", query.lower())
+    if not terms:
+        return query
+    return " OR ".join(f'"{t}"' for t in terms)
 
 
 def _semantic_scores(conn: sqlite3.Connection, query: str, chunk_ids: list[int]) -> dict[int, float]:
@@ -368,3 +402,18 @@ def _min_max_normalize(scores: dict[int, float]) -> dict[int, float]:
     if hi - lo < 1e-9:
         return {k: 1.0 for k in scores}
     return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
+
+
+def _reciprocal_rank_fusion(*rankings: dict[int, float], k: int = 60) -> dict[int, float]:
+    """Combine multiple {chunk_id: raw_score} rankings by rank position
+    rather than raw score value -- standard, simple, and robust to
+    inputs living on totally different scales (BM25 vs. cosine
+    similarity aren't comparable numbers). Every chunk gets *some*
+    semantic score (cosine similarity is defined for every chunk), so
+    the fused result always covers every chunk id."""
+    fused: dict[int, float] = {}
+    for ranking in rankings:
+        ordered = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)
+        for rank, (chunk_id, _value) in enumerate(ordered, start=1):
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + 1.0 / (k + rank)
+    return fused

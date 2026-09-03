@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Installs and caches the real sentence-transformers embedding model for
-# Semantic Document. Run from anywhere:
+# Installs and caches the real sentence-transformers embedding model AND
+# the cross-encoder reranker for Semantic Document. Run from anywhere:
 #
 #   ./scripts/install-embeddings.sh
 #
-# This is a one-time setup step. Once it finishes, the app runs the
-# model fully offline forever after (see app/embeddings.py) -- that's
-# the whole point of the app's privacy model, not just a workaround.
+# This is a one-time setup step. Once it finishes, the app runs both
+# models fully offline forever after (see app/embeddings.py and
+# app/reranker.py) -- that's the whole point of the app's privacy
+# model, not just a workaround.
 #
 # On the Walmart corporate network, two internal mirrors make this work
 # without ever touching the public internet:
@@ -27,6 +28,9 @@ CA_BUNDLE="${TMPDIR:-/tmp}/semantic-document-ca-bundle.pem"
 echo "=============================================================="
 echo " Step 1/3: Installing the sentence-transformers package"
 echo "=============================================================="
+echo "(this also provides CrossEncoder, used for reranking -- no"
+echo " separate package needed)"
+echo ""
 
 install_with() {
     local index_url="$1"
@@ -69,38 +73,50 @@ fi
 
 echo ""
 echo "=============================================================="
-echo " Step 3/3: Downloading and caching the model (one-time, ~80MB)"
+echo " Step 3/3: Downloading and caching both models (one-time)"
 echo "=============================================================="
 echo "Using the internal Hugging Face mirror: $HF_MIRROR"
+echo "Embedding model: sentence-transformers/all-MiniLM-L6-v2 (~80MB)"
+echo "Reranker model:  cross-encoder/ms-marco-MiniLM-L-6-v2 (~90MB)"
 echo ""
 
 HF_ENDPOINT="$HF_MIRROR" \
 REQUESTS_CA_BUNDLE="$CA_BUNDLE" \
 SSL_CERT_FILE="$CA_BUNDLE" \
 uv run python -c "
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
+
 model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 vec = model.encode('hello world')
-print(f'Success -- embedding dimension: {len(vec)}')
+print(f'Embedding model OK -- dimension: {len(vec)}')
+
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+score = reranker.predict([('hello', 'world')])
+print(f'Reranker model OK -- sample score: {score}')
 "
 
 echo ""
 echo "=============================================================="
-echo " Verifying app.embeddings works fully offline from here on"
+echo " Verifying the app's own modules work fully offline from here"
 echo "=============================================================="
 uv run python -c "
 from app.embeddings import embed_texts, embed_query
+from app.reranker import rerank
 import numpy as np
+
 vecs = embed_texts(['the quick brown fox', 'a lazy sleepy dog'])
 q = embed_query('quick fox')
 print('Cosine sim to fox sentence (should be high):', float(np.dot(q, vecs[0])))
 print('Cosine sim to dog sentence (should be low):', float(np.dot(q, vecs[1])))
+
+scores = rerank('what are the database choices', ['For storage, choose between a real-time store and a durable store.', 'The weather today is sunny with a light breeze.'])
+print('Rerank scores (first should be higher):', scores)
 "
 
 echo ""
-echo "Done. The model is cached at ~/.cache/huggingface and the app runs"
-echo "fully offline from here -- restart it and Finalize will use real"
-echo "semantic embeddings."
+echo "Done. Both models are cached at ~/.cache/huggingface and the app"
+echo "runs fully offline from here -- restart it and search/finalize"
+echo "will use real semantic embeddings plus cross-encoder reranking."
 echo ""
 echo "If step 1 or 3 hangs instead of failing outright:"
 echo "  1. Try again off VPN / on a different network (home wifi, hotspot)."
