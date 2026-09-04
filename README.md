@@ -8,6 +8,12 @@ searchable -- offline, with no external vector database required.
 Most "AI search over my notes" tools keep your text and its embeddings in
 two separate places that can silently drift apart. Semantic Document
 takes a different, deliberately strict approach for its first phase:
+The combination is what's novel, not any single piece:
+• File-first, not folder-first — the artifact is one document, not a vault or workspace
+• Immutable snapshot — the searchable representation of the document at a moment in time is preserved forever (legally significant for contracts, evidence, published papers, sealed correspondence)
+• Offline-first on mobile — no cloud, no account, no subscription; opens like a PDF
+• Reader ecosystem — anyone can build a conformant reader on any platform (like PDF)
+
 
 1. **Draft** -- write and edit freely, just like any text editor.
 2. **Finalize** -- one action chunks the content, generates embeddings
