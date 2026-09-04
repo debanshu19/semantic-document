@@ -45,33 +45,55 @@ repo. That keeps them independent of wherever you happen to have checked
 out the source, and safe from `git clean`. Override the location with
 the `SDOC_LIBRARY_DIR` environment variable if you want it elsewhere.
 
-Semantic Document uses exactly one embedding model --
-`sentence-transformers/all-MiniLM-L6-v2` -- plus one reranker model --
-`cross-encoder/ms-marco-MiniLM-L-6-v2` -- both running fully locally, so
-no document text or query ever leaves your machine. They're kept as
-optional (rather than hard) dependencies only because they pull in
-torch, a large download; functionally, they're the app's only embedding
-and reranking backends, no fallback.
+Semantic Document ships a small **curated registry of embedding
+models** you can pick from at finalize time -- a fast/small default,
+a higher-quality larger option, and a multilingual one -- plus one
+reranker model (`cross-encoder/ms-marco-MiniLM-L-6-v2`). All run fully
+locally, so no document text or query ever leaves your machine. They're
+kept as optional (rather than hard) dependencies only because they pull
+in torch, a large download; functionally, they're the app's only
+embedding and reranking backends, no fallback.
 
-`scripts/install-embeddings.sh` handles the one-time setup: installs the
-package and pre-downloads/caches both models' weights (~170MB total,
-cached under `~/.cache/huggingface`). After that, the app runs both
-models in Hugging Face's **offline mode** by default (`app/embeddings.py`
-and `app/reranker.py` each set `HF_HUB_OFFLINE=1`) -- neither will ever
-make a network call on its own. That's not just a corporate-network
-workaround; it's the correct behavior for an app whose whole privacy
-model is "no cloud calls, ever." If a model isn't cached yet, that's a
-setup step to run once, not something search/finalize should silently
-reach out to the internet for.
+The **chosen embedding model is a permanent property of a finalized
+.sdoc** -- once picked, the short name is written into the file's meta
+table, and search always reloads *that specific model* to embed the
+query. This isn't optional: if search embedded queries with a different
+model than the stored chunks, the two vectors would live in
+incompatible vector spaces and cosine similarity would be meaningless.
+Older .sdoc files finalized before the registry existed (which stored
+the full HuggingFace path) are still readable -- the resolver accepts
+either form.
 
-If the embedding model isn't installed/cached, finalize fails safely and
-clearly: your draft is untouched, nothing half-finished gets published.
-That's the design doc's intended FAILED state working as designed, not a
-bug -- there's no silent degrading to a lower-quality substitute model.
-The reranker is treated differently on purpose: if it's missing, search
-still works (just without the precision-focused second pass), since
-search is read-only against already-committed data with nothing to
-protect by failing hard.
+`scripts/install-embeddings.sh` handles the one-time setup: installs
+the package and pre-downloads/caches models via the internal Hugging
+Face mirror. It defaults to just the default embedding model + the
+reranker (~170MB); pass model short names or `--all` to fetch extras:
+
+```bash
+./scripts/install-embeddings.sh                    # default only
+./scripts/install-embeddings.sh all-mpnet-base-v2  # + higher-quality model
+./scripts/install-embeddings.sh --all              # every registered model
+```
+
+After caching, the app runs everything in Hugging Face's **offline
+mode** by default (`app/embeddings.py` and `app/reranker.py` each set
+`HF_HUB_OFFLINE=1`) -- neither will ever make a network call on its
+own. That's not just a corporate-network workaround; it's the correct
+behavior for an app whose whole privacy model is "no cloud calls,
+ever." If a picked model isn't cached yet, that's a setup step to run
+once, not something search/finalize should silently reach out to the
+internet for.
+
+If the picked embedding model isn't installed/cached, finalize fails
+safely and clearly: your draft is untouched, the error message spells
+out exactly which model is missing and how to install it, and nothing
+half-finished gets published. That's the design doc's intended FAILED
+state working as designed, not a bug -- there's no silent degrading to
+a different (and vector-space-incompatible!) substitute. The reranker
+is treated differently on purpose: if it's missing, search still works
+(just without the precision-focused second pass), since search is
+read-only against already-committed data with nothing to protect by
+failing hard.
 
 ## Using it
 

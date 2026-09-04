@@ -70,7 +70,7 @@ def test_finalize_twice_raises(tmp_path):
 def test_finalize_leaves_draft_intact_when_embedding_fails(tmp_path, monkeypatch):
     sdoc.create_draft(tmp_path, "doc5", title="Doc Five", content="some content to embed")
 
-    def boom(texts):
+    def boom(texts, model_name=None):
         raise EmbeddingError("model unavailable")
 
     monkeypatch.setattr(sdoc, "embed_texts", boom)
@@ -185,3 +185,55 @@ def test_search_with_no_query_returns_empty(tmp_path):
     sdoc.create_draft(tmp_path, "doc7", title="Doc Seven", content="anything at all")
     final = sdoc.finalize_draft(tmp_path, "doc7")
     assert sdoc.search(final, "") == []
+
+
+def test_finalize_records_default_model_when_none_specified(tmp_path):
+    sdoc.create_draft(tmp_path, "doc-default-model", title="D", content="some content")
+    final = sdoc.finalize_draft(tmp_path, "doc-default-model")
+    from app.embeddings import DEFAULT_MODEL_NAME
+
+    meta = sdoc.open_finalized(final)["meta"]
+    assert meta["model_name"] == DEFAULT_MODEL_NAME
+
+
+def test_finalize_records_explicitly_chosen_model(tmp_path):
+    """The model choice is a permanent property of a finalized .sdoc --
+    once chosen at finalize time it's locked into meta forever, and
+    search reloads that same model to keep query vectors in the same
+    vector space as the stored chunk vectors."""
+    sdoc.create_draft(tmp_path, "doc-chosen-model", title="D", content="some content here")
+    final = sdoc.finalize_draft(tmp_path, "doc-chosen-model", embedding_model="all-mpnet-base-v2")
+
+    meta = sdoc.open_finalized(final)["meta"]
+    assert meta["model_name"] == "all-mpnet-base-v2"
+    assert meta["embedding_dim"] == "768"  # mpnet, not MiniLM's 384
+
+
+def test_finalize_unknown_model_fails_safely_leaving_draft_intact(tmp_path):
+    sdoc.create_draft(tmp_path, "doc-bad-model", title="D", content="content")
+    with pytest.raises(sdoc.SDocError):
+        sdoc.finalize_draft(tmp_path, "doc-bad-model", embedding_model="nonexistent-model-9000")
+    # FAILED state must never eat the draft.
+    assert sdoc.draft_path(tmp_path, "doc-bad-model").exists()
+    assert not sdoc.final_path(tmp_path, "doc-bad-model").exists()
+
+
+def test_search_routes_query_embedding_through_the_recorded_model(tmp_path, monkeypatch):
+    """Regression against a real risk: if search embeds the query with
+    the DEFAULT model but the .sdoc was finalized with a DIFFERENT one,
+    query and chunk vectors live in incompatible spaces and cosine
+    similarity is meaningless. Capture which model name gets passed in."""
+    sdoc.create_draft(tmp_path, "doc-routing", title="D", content="content to embed")
+    sdoc.finalize_draft(tmp_path, "doc-routing", embedding_model="all-mpnet-base-v2")
+
+    captured = {}
+
+    def spy(query, model_name=None):
+        captured["model_name"] = model_name
+        import numpy as np
+
+        return np.zeros(384, dtype="float32")
+
+    monkeypatch.setattr(sdoc, "embed_query", spy)
+    sdoc.search(sdoc.final_path(tmp_path, "doc-routing"), "any query")
+    assert captured["model_name"] == "all-mpnet-base-v2"

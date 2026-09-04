@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Installs and caches the real sentence-transformers embedding model AND
-# the cross-encoder reranker for Semantic Document. Run from anywhere:
+# Installs sentence-transformers and caches embedding + reranker models
+# for Semantic Document. Run from anywhere:
 #
-#   ./scripts/install-embeddings.sh
+#   ./scripts/install-embeddings.sh                    # default model only
+#   ./scripts/install-embeddings.sh all-mpnet-base-v2  # + higher-quality model
+#   ./scripts/install-embeddings.sh --all              # every registered model
 #
-# This is a one-time setup step. Once it finishes, the app runs both
-# models fully offline forever after (see app/embeddings.py and
+# The reranker (cross-encoder/ms-marco-MiniLM-L-6-v2) is always cached
+# regardless -- there's only one of it, no user-selectable variants.
+#
+# This is a one-time setup step per model. Once cached, the app runs
+# fully offline forever after (see app/embeddings.py and
 # app/reranker.py) -- that's the whole point of the app's privacy
 # model, not just a workaround.
 #
@@ -21,9 +26,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 WALMART_PYPI_INDEX="https://pypi.ci.artifacts.walmart.com/artifactory/api/pypi/mlplatforms-pypi/simple"
-WALMART_HOST="pypi.ci.artifacts.walmart.com"
 HF_MIRROR="https://ci.artifacts.walmart.com/artifactory/api/huggingfaceml/hub-huggingfaceml-release-remote"
 CA_BUNDLE="${TMPDIR:-/tmp}/semantic-document-ca-bundle.pem"
+
+# Which embedding models to fetch. Default: just the default one.
+# --all: everything the registry knows about. Otherwise: whatever names
+# the user passed. All names must be short names from app.embeddings' registry.
+EXTRA_MODELS=("$@")
 
 echo "=============================================================="
 echo " Step 1/3: Installing the sentence-transformers package"
@@ -73,26 +82,44 @@ fi
 
 echo ""
 echo "=============================================================="
-echo " Step 3/3: Downloading and caching both models (one-time)"
+echo " Step 3/3: Downloading and caching models (one-time per model)"
 echo "=============================================================="
 echo "Using the internal Hugging Face mirror: $HF_MIRROR"
-echo "Embedding model: sentence-transformers/all-MiniLM-L6-v2 (~80MB)"
-echo "Reranker model:  cross-encoder/ms-marco-MiniLM-L-6-v2 (~90MB)"
+echo "Reranker: cross-encoder/ms-marco-MiniLM-L-6-v2 (always cached)"
+if [ ${#EXTRA_MODELS[@]} -eq 0 ]; then
+    echo "Embedding models: default only (pass names or --all to fetch more)"
+else
+    echo "Embedding models to fetch: ${EXTRA_MODELS[*]}"
+fi
 echo ""
+
+MODELS_CSV="$(IFS=,; echo "${EXTRA_MODELS[*]-}")"
 
 HF_ENDPOINT="$HF_MIRROR" \
 REQUESTS_CA_BUNDLE="$CA_BUNDLE" \
 SSL_CERT_FILE="$CA_BUNDLE" \
+SDOC_EXTRA_MODELS="$MODELS_CSV" \
 uv run python -c "
+import os
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from app.embeddings import available_models, DEFAULT_MODEL_NAME, resolve_model
 
-model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-vec = model.encode('hello world')
-print(f'Embedding model OK -- dimension: {len(vec)}')
+requested = [s.strip() for s in os.environ.get('SDOC_EXTRA_MODELS', '').split(',') if s.strip()]
+if '--all' in requested:
+    to_fetch = [m.name for m in available_models()]
+else:
+    to_fetch = [DEFAULT_MODEL_NAME] + [m for m in requested if m != DEFAULT_MODEL_NAME]
 
+for name in to_fetch:
+    spec = resolve_model(name)
+    print(f'\n--- {spec.name} ({spec.dim}-dim, ~{spec.size_mb}MB) ---')
+    model = SentenceTransformer(spec.hf_path)
+    vec = model.encode('hello world')
+    print(f'OK -- dimension: {len(vec)}')
+
+print('\n--- cross-encoder/ms-marco-MiniLM-L-6-v2 (reranker) ---')
 reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-score = reranker.predict([('hello', 'world')])
-print(f'Reranker model OK -- sample score: {score}')
+print(f'OK -- sample score: {reranker.predict([(\"hello\", \"world\")])}')
 "
 
 echo ""
@@ -100,12 +127,12 @@ echo "=============================================================="
 echo " Verifying the app's own modules work fully offline from here"
 echo "=============================================================="
 uv run python -c "
-from app.embeddings import embed_texts, embed_query
+from app.embeddings import embed_texts, embed_query, DEFAULT_MODEL_NAME
 from app.reranker import rerank
 import numpy as np
 
-vecs = embed_texts(['the quick brown fox', 'a lazy sleepy dog'])
-q = embed_query('quick fox')
+vecs = embed_texts(['the quick brown fox', 'a lazy sleepy dog'], model_name=DEFAULT_MODEL_NAME)
+q = embed_query('quick fox', model_name=DEFAULT_MODEL_NAME)
 print('Cosine sim to fox sentence (should be high):', float(np.dot(q, vecs[0])))
 print('Cosine sim to dog sentence (should be low):', float(np.dot(q, vecs[1])))
 
@@ -114,9 +141,10 @@ print('Rerank scores (first should be higher):', scores)
 "
 
 echo ""
-echo "Done. Both models are cached at ~/.cache/huggingface and the app"
-echo "runs fully offline from here -- restart it and search/finalize"
-echo "will use real semantic embeddings plus cross-encoder reranking."
+echo "Done. All requested models are cached at ~/.cache/huggingface and"
+echo "the app runs fully offline from here. Users can now pick from the"
+echo "cached models in the Finalize dropdown; the choice is locked into"
+echo "the finalized .sdoc's metadata so search always uses the same one."
 echo ""
 echo "If step 1 or 3 hangs instead of failing outright:"
 echo "  1. Try again off VPN / on a different network (home wifi, hotspot)."

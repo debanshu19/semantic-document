@@ -32,7 +32,13 @@ from pathlib import Path
 import numpy as np
 
 from app.chunking import chunk_text
-from app.embeddings import EmbeddingError, embed_query, embed_texts
+from app.embeddings import (
+    DEFAULT_MODEL_NAME,
+    EmbeddingError,
+    embed_query,
+    embed_texts,
+    resolve_model,
+)
 from app.reranker import rerank as cross_encoder_rerank
 
 SCHEMA_VERSION = 1
@@ -130,7 +136,12 @@ def content_hash(text: str) -> str:
 # Finalization (build + atomic commit)
 # --------------------------------------------------------------------------
 
-def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None) -> Path:
+def finalize_draft(
+    library_dir: Path,
+    name: str,
+    output_path: Path | None = None,
+    embedding_model: str | None = None,
+) -> Path:
     """Run the full DRAFT -> FINALIZED pipeline for `name`.
 
     By default the finalized .sdoc is written into `library_dir` next to
@@ -139,9 +150,20 @@ def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None
     itself always lives in `library_dir` regardless of where the
     finalized file ends up.
 
+    `embedding_model` picks which model in the registry to use; the
+    choice is recorded in the .sdoc meta so search can reload the same
+    model. None -> the default. See app.embeddings.available_models().
+
     Returns the path to the new .sdoc on success. Raises SDocError on any
     failure; the draft is guaranteed untouched in that case.
     """
+    try:
+        spec = resolve_model(embedding_model)
+    except EmbeddingError as exc:
+        # Same FAILED-state contract as an embed_texts failure: draft
+        # untouched, no partial artifact ever appears on disk. Convert
+        # to SDocError so callers only need to catch one exception type.
+        raise SDocError(str(exc)) from exc
     d_path = draft_path(library_dir, name)
     f_path = output_path if output_path is not None else final_path(library_dir, name)
     if f_path.exists():
@@ -157,7 +179,7 @@ def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None
         raise SDocError("Content did not produce any chunks -- nothing to index.")
 
     try:
-        vectors = embed_texts([c.text for c in chunks])
+        vectors = embed_texts([c.text for c in chunks], model_name=spec.name)
     except EmbeddingError as exc:
         # FAILED state: draft remains available, nothing published.
         raise SDocError(f"Finalization failed while embedding: {exc}") from exc
@@ -168,7 +190,14 @@ def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None
     f_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = f_path.parent / f".{f_path.stem}.{uuid.uuid4().hex}.sdoc.tmp"
     try:
-        _build_sdoc_file(tmp_path, title=draft.title, canonical=canonical, chunks=chunks, vectors=vectors)
+        _build_sdoc_file(
+            tmp_path,
+            title=draft.title,
+            canonical=canonical,
+            chunks=chunks,
+            vectors=vectors,
+            model_spec=spec,
+        )
         _verify_integrity(tmp_path, expected_hash=content_hash(canonical), expected_chunks=len(chunks))
         os.replace(tmp_path, f_path)  # atomic on same filesystem
     finally:
@@ -179,7 +208,15 @@ def finalize_draft(library_dir: Path, name: str, output_path: Path | None = None
     return f_path
 
 
-def _build_sdoc_file(path: Path, *, title: str, canonical: str, chunks, vectors: np.ndarray) -> None:
+def _build_sdoc_file(
+    path: Path,
+    *,
+    title: str,
+    canonical: str,
+    chunks,
+    vectors: np.ndarray,
+    model_spec,
+) -> None:
     conn = sqlite3.connect(path)
     try:
         # Deliberately NOT WAL mode: WAL leaves -wal/-shm sidecar files
@@ -222,16 +259,14 @@ def _build_sdoc_file(path: Path, *, title: str, canonical: str, chunks, vectors:
                 (chunk.index, vector.astype(np.float32).tobytes()),
             )
 
-        from app.embeddings import EMBEDDING_DIM, MODEL_NAME
-
         now = time.time()
         meta = {
             "schema_version": str(SCHEMA_VERSION),
             "title": title,
             "status": "FINALIZED",
             "finalized_at": str(now),
-            "model_name": MODEL_NAME,
-            "embedding_dim": str(EMBEDDING_DIM),
+            "model_name": model_spec.name,
+            "embedding_dim": str(model_spec.dim),
             "content_hash": content_hash(canonical),
             "chunk_count": str(len(chunks)),
         }
@@ -313,6 +348,14 @@ def search(path: Path, query: str, top_k: int = 5) -> list[SearchHit]:
 
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
+        # Which model was this .sdoc finalized with? Query embedding MUST
+        # use the same model, otherwise the query vector lives in a
+        # different vector space than the stored chunk vectors and cosine
+        # similarity is meaningless. resolve_model handles both short
+        # names and legacy full HF paths.
+        row = conn.execute("SELECT value FROM meta WHERE key = 'model_name'").fetchone()
+        model_name = row[0] if row is not None else DEFAULT_MODEL_NAME
+
         chunks = {
             row[0]: {"text": row[1], "start": row[2], "end": row[3]}
             for row in conn.execute("SELECT id, text, start_offset, end_offset FROM chunks")
@@ -321,7 +364,7 @@ def search(path: Path, query: str, top_k: int = 5) -> list[SearchHit]:
             return []
 
         raw_keyword = _keyword_scores(conn, query)
-        raw_semantic = _semantic_scores(conn, query, list(chunks.keys()))
+        raw_semantic = _semantic_scores(conn, query, list(chunks.keys()), model_name)
         keyword_norm = _min_max_normalize(raw_keyword)
         semantic_norm = _min_max_normalize(raw_semantic)
 
@@ -380,8 +423,10 @@ def _build_fts_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
-def _semantic_scores(conn: sqlite3.Connection, query: str, chunk_ids: list[int]) -> dict[int, float]:
-    query_vector = embed_query(query)
+def _semantic_scores(
+    conn: sqlite3.Connection, query: str, chunk_ids: list[int], model_name: str
+) -> dict[int, float]:
+    query_vector = embed_query(query, model_name=model_name)
     rows = conn.execute(
         f"SELECT chunk_id, vector FROM embeddings WHERE chunk_id IN ({','.join('?' * len(chunk_ids))})",
         chunk_ids,

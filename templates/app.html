@@ -73,9 +73,24 @@
     </form>
 
     {% if mode == "draft" %}
-    <form action="/finalize" method="post" class="mt-3"
+    <form action="/finalize" method="post" class="mt-3 space-y-2"
           onsubmit="return confirm('Finalize is permanent -- this document becomes read-only forever. Continue?');">
       <input type="hidden" name="doc" value="{{ doc_ref }}" />
+
+      <label class="block text-xs uppercase tracking-wide text-slate-500 font-semibold">
+        Embedding model
+        <span class="text-slate-400 font-normal normal-case tracking-normal">(locked into this document forever -- pick carefully)</span>
+      </label>
+      <select name="embedding_model" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white">
+        {% for m in models %}
+        <option value="{{ m.name }}" {% if m.name == default_model %}selected{% endif %}
+                title="{{ m.description }}">
+          {{ m.name }} &mdash; {{ m.dim }}-dim, ~{{ m.size_mb }}MB
+          {% if m.name == default_model %}(default){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+
       <button type="submit" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 w-full font-semibold">
         Finalize & Save (locks this document forever)
       </button>

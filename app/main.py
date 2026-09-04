@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import sdoc
+from app.embeddings import DEFAULT_MODEL_NAME, available_models
 from app.library import list_library
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,8 @@ def _render(request, entries, *, mode, doc_ref=None, is_external=False, draft=No
             "draft": draft,
             "finalized": finalized,
             "error": error,
+            "models": available_models(),
+            "default_model": DEFAULT_MODEL_NAME,
         },
     )
 
@@ -160,9 +163,9 @@ def save(title: str = Form(...), content: str = Form(...), doc: str = Form("")):
 
 
 @app.post("/finalize")
-def finalize(doc: str = Form(...)):
+def finalize(doc: str = Form(...), embedding_model: str = Form("")):
     try:
-        sdoc.finalize_draft(LIBRARY_DIR, doc)
+        sdoc.finalize_draft(LIBRARY_DIR, doc, embedding_model=embedding_model or None)
     except sdoc.SDocError as exc:
         return RedirectResponse(f"/?doc={quote(doc)}&error={quote(str(exc))}", status_code=303)
     return RedirectResponse(f"/?doc={quote(doc)}", status_code=303)

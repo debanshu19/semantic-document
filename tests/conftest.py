@@ -19,11 +19,16 @@ from app import sdoc
 _FAKE_EMBEDDING_DIM = 384
 
 
-def _fake_embed_texts(texts: list[str]) -> np.ndarray:
+def _fake_embed_texts(texts: list[str], model_name: str | None = None) -> np.ndarray:
     """Deterministic feature-hashed bag-of-words -- good enough to make
     search-ranking assertions meaningful in tests, without needing the
     real model. Uses zlib.crc32 (stable across processes), not Python's
-    randomized-per-process hash()."""
+    randomized-per-process hash().
+
+    Accepts (and ignores) `model_name` so tests exercising the
+    multi-model registry can use the same fake for any model choice --
+    the important properties (deterministic, offline, meaningful for
+    ranking) don't depend on which model was picked."""
     vectors = np.zeros((len(texts), _FAKE_EMBEDDING_DIM), dtype=np.float32)
     for i, text in enumerate(texts):
         for word in text.lower().split():
@@ -50,7 +55,7 @@ def _fake_rerank(query: str, candidates: list[str]) -> list[float]:
 @pytest.fixture(autouse=True)
 def fake_embeddings(monkeypatch):
     monkeypatch.setattr(sdoc, "embed_texts", _fake_embed_texts)
-    monkeypatch.setattr(sdoc, "embed_query", lambda q: _fake_embed_texts([q])[0])
+    monkeypatch.setattr(sdoc, "embed_query", lambda q, model_name=None: _fake_embed_texts([q])[0])
 
 
 @pytest.fixture(autouse=True)
